@@ -1,0 +1,83 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from einops import rearrange
+
+
+class CharbonnierLoss(nn.Module):
+    """Charbonnier Loss (L1)"""
+
+    def __init__(self, eps=1e-3):
+        super(CharbonnierLoss, self).__init__()
+        self.eps = eps
+
+    def forward(self, x, y):
+        diff = x - y
+        # loss = torch.sum(torch.sqrt(diff * diff + self.eps))
+        loss = torch.mean(torch.sqrt((diff * diff) + (self.eps*self.eps)))
+        return loss
+
+
+def get_curvature(pts, type='vector'):
+    if type == 'vector':
+    """second-order derivative"""
+        bwh, c = pts.shape
+
+        y1 = pts[:, :c - 2]
+        y2 = pts[:, 1:c - 1]
+        y3 = pts[:, 2:c]
+
+        diff2_1 = (y1 - y2).reshape(bwh, c - 2, -1)
+        diff2_3 = (y3 - y2).reshape(bwh, c - 2, -1)
+        diff1_3 = (y3 - y1).reshape(bwh, c - 2, -1)
+
+        diff_x1 = torch.ones((bwh, c - 2, 1)).cuda()
+        diff_x2 = (torch.ones((bwh, c - 2, 1)) * 2).cuda()
+        diff_x3 = torch.zeros((bwh, c - 2, 1)).cuda()
+        vec_2_1 = torch.cat((diff_x1, diff2_1, diff_x3), dim=-1)
+        vec_2_3 = torch.cat((diff_x1, diff2_3, diff_x3), dim=-1)
+        vec_1_3 = torch.cat((diff_x2, diff1_3), dim=-1)
+
+        norm_lines = torch.norm(vec_1_3, dim=-1)
+        cross_result = torch.cross(vec_2_1, vec_2_3, dim=-1)[:, :, -1]
+        r = cross_result / norm_lines
+
+        # d = (torch.dot(diff_x1.reshape(-1), diff_x1.reshape(-1))+torch.dot(diff2_1.reshape(-1), diff2_3.reshape(-1)))/ (torch.norm(vec_2_1) * torch.norm(vec_2_3))
+        # sin = 1- torch.sqrt(1-d**2)
+        # r = 20 * sin / norm_lines
+
+    elif type == 'cubic':
+        r = 1
+
+    elif type == 'diff':
+    """first-order derivative"""
+        bwh, c = pts.shape
+        y1 = pts[:, :c - 1]
+        y2 = pts[:, 1:]
+        r = y2 - y1
+    return r
+
+class CurvatureLoss(nn.Module):
+    """CurvatureLoss"""
+
+    def __init__(self, eps=1e-3, type='diff'):
+        super(CurvatureLoss, self).__init__()
+        self.eps = eps
+        self.type = type
+        if type == 'diff':
+            self.loss = nn.L1Loss().cuda()
+        else:
+            self.loss = nn.MSELoss().cuda()
+    def forward(self, x, y):
+        if self.type == 'diff':
+            loss = self.loss(get_curvature(x, type=self.type), get_curvature(y, type=self.type))
+        else:
+            loss = torch.sqrt((self.loss(get_curvature(x, type=self.type), get_curvature(y, type=self.type))))
+        return loss
+
+
+
+
+
+# input = torch.randn(2,256, 256, 28).cuda()
+# r = get_curvature(input.reshape(-1,28))
